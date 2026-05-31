@@ -1,0 +1,6 @@
+# Build artifacts
+/build/
+/dist/
+/.gradle/
+# Generated SLEIGH output (built from .slaspec/.sinc)
+*.sla
