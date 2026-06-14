@@ -1294,45 +1294,91 @@ MUL1: xreg3_h * xreg0_h is xh01=1 & xh11=1 & mmodval & xreg3_h & xreg0_h { local
 # (mmod 13 = default fractional, 14 = (T), 15 = (IS)).  A Dreg holds a packed Q15 complex
 # value { im = high 16, re = low 16 }.  op1 (op10001) picks the conjugation:
 #   0 -> CMUL(s0, s1)    1 -> CMUL(s0, s1*)    2 -> CMUL(s0*, s1*)
-# Only the default-mode (mmod 13) plain "Dreg = CMUL(...)" form (op0 == 3, w0 == 1, single
-# dest) is modelled -- the form ADI's cfftf_fr16 / ifftf_fr16 FFT kernels use for the twiddle
-# multiply.  Per the BF70x Programming Reference, the real result -> dest.L and imaginary
-# result -> dest.H, each as the upper 16 bits of the complex product (signed fractional).
-# Modelled as (re/im) >> 15 with 16-bit saturation (the fractional x2 makes the upper-16
-# extract == >>15); conjugate negates the relevant imaginary terms.  The default-mode round
-# bias and the (T)/(IS) and accumulator (A1:0 ...) variants are not yet modelled.
+# The single-destination "Dreg = CMUL(...)" form (op0 == 3, w0 == 1) is modelled for all three
+# modes and all three conjugations.  Per the BF70x Programming Reference: the real result goes
+# to dest.L and the imaginary result to dest.H.
+#   default (mmod 13): signed fractional, upper-16 extract WITH rounding + saturation
+#   (T)     (mmod 14): signed fractional, upper-16 extract, truncated (no round) + saturation
+#   (IS)    (mmod 15): signed integer, lower-16 extract
+# The fractional x2 makes the upper-16 extract == >>15.  Conjugate negates the relevant
+# imaginary terms.  Default rounding is modelled as biased round-to-nearest (+0x4000 before
+# >>15); the unbiased/convergent ASTAT.RND_MOD case is not distinguished.  The register-pair
+# dest (Dreg_pair = CMUL) and accumulator forms (A1:0 = / += / -= cmul, Dreg = (A1:0 = cmul))
+# are not yet modelled (unused by the ROM FFT kernels).
 
+# extract helpers: re/im are 8-byte signed raw complex products
+macro cmul_rnd(d, re, im) {
+    local x:8; sat_s16(x, (re + 0x4000:8) s>> 15);
+    local y:8; sat_s16(y, (im + 0x4000:8) s>> 15);
+    d = (zext(y:2) << 16) | zext(x:2);
+}
+macro cmul_trunc(d, re, im) {
+    local x:8; sat_s16(x, re s>> 15);
+    local y:8; sat_s16(y, im s>> 15);
+    d = (zext(y:2) << 16) | zext(x:2);
+}
+macro cmul_int(d, re, im) {
+    d = (zext(im:2) << 16) | zext(re:2);
+}
+
+# ---- default mode (mmod 13): rounded fractional ----
 :CMUL^p xreg6 = "(" xreg3 "," xreg0 ")"
     is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=0 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
 {
-    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
-    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
-    local rr:8; sat_s16(rr, (ar*br - ai*bi) s>> 15);
-    local ri:8; sat_s16(ri, (ar*bi + ai*br) s>> 15);
-    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
-    build p;
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_rnd(xreg6, ar*br - ai*bi, ar*bi + ai*br); build p;
 }
-
 :CMUL^p xreg6 = "(" xreg3 "," xreg0 "*)"
     is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=1 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
 {
-    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
-    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
-    local rr:8; sat_s16(rr, (ar*br + ai*bi) s>> 15);
-    local ri:8; sat_s16(ri, (ai*br - ar*bi) s>> 15);
-    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
-    build p;
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_rnd(xreg6, ar*br + ai*bi, ai*br - ar*bi); build p;
 }
-
 :CMUL^p xreg6 = "(" xreg3 "*," xreg0 "*)"
     is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=2 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
 {
-    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
-    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
-    local rr:8; sat_s16(rr, (ar*br - ai*bi) s>> 15);
-    local ri:8; sat_s16(ri, (0:8 - (ar*bi + ai*br)) s>> 15);
-    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
-    build p;
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_rnd(xreg6, ar*br - ai*bi, 0:8 - (ar*bi + ai*br)); build p;
+}
+
+# ---- (T) mode (mmod 14): truncated fractional ----
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 ")" " (T)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=0 & mmod0508=14 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_trunc(xreg6, ar*br - ai*bi, ar*bi + ai*br); build p;
+}
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 "*)" " (T)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=1 & mmod0508=14 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_trunc(xreg6, ar*br + ai*bi, ai*br - ar*bi); build p;
+}
+:CMUL^p xreg6 = "(" xreg3 "*," xreg0 "*)" " (T)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=2 & mmod0508=14 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    cmul_trunc(xreg6, ar*br - ai*bi, 0:8 - (ar*bi + ai*br)); build p;
+}
+
+# ---- (IS) mode (mmod 15): signed integer, low-16 ----
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 ")" " (IS)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=0 & mmod0508=15 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    local re:8 = ar*br - ai*bi; local im:8 = ar*bi + ai*br; cmul_int(xreg6, re, im); build p;
+}
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 "*)" " (IS)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=1 & mmod0508=15 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    local re:8 = ar*br + ai*bi; local im:8 = ai*br - ar*bi; cmul_int(xreg6, re, im); build p;
+}
+:CMUL^p xreg6 = "(" xreg3 "*," xreg0 "*)" " (IS)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=2 & mmod0508=15 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8=sext(xreg3[0,16]); local ai:8=sext(xreg3[16,16]); local br:8=sext(xreg0[0,16]); local bi:8=sext(xreg0[16,16]);
+    local re:8 = ar*br - ai*bi; local im:8 = 0:8 - (ar*bi + ai*br); cmul_int(xreg6, re, im); build p;
 }
 
 
