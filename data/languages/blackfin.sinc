@@ -313,6 +313,7 @@ define context contextreg
     phase = (0,0)
     loop0active = (1,1) noflow
     loop1active = (2,2) noflow
+    mmodval = (3,6) noflow
 ;
 
 attach values [LdSt_sz] [4 2 1 0];
@@ -457,6 +458,19 @@ macro sat_u32(res, val) {
     local lo = val s< 0:8;
     local ok = (lo == 0) && (hi == 0);
     res = (val * zext(ok)) + (0x00000000ffffffff:8 * zext(hi));
+}
+
+# Mode-dependent accumulator saturation (sim decode_macfunc switch). mv=mmod.
+#   signed modes -> s40; W32(3)/IH(11) -> s32; FU(4)/TFU(6)/IU(12) -> unsigned-40.
+macro sat_macc(res, val, mv) {
+    local s40v:8; sat_s40(s40v, val);
+    local s32v:8; sat_s32(s32v, val);
+    local ulo = val s< 0:8;
+    local uhi = val s> 0x000000ffffffffff:8;
+    local u40v:8 = (val * zext((ulo==0)&&(uhi==0))) + (0x000000ffffffffff:8 * zext(uhi));
+    local w32 = (mv==3)||(mv==11);
+    local uns = (mv==4)||(mv==6)||(mv==12);
+    res = (s40v * zext((w32==0)&&(uns==0))) + (s32v * zext(w32)) + (u40v * zext(uns));
 }
 
 # Extract accumulator to a 16-bit dest: sat_s16 of acc[31:16] (default fractional output).
@@ -1125,91 +1139,91 @@ LdStIFP_ptr: [FP + offset] is FP & LdStIFP_off [offset = -((~LdStIFP_off & 0x1f)
 # with mmod=0). NOTE: integer modes (is/iu/ih) do not shift, and w32/fu/iu use
 # different saturation — see mode-fidelity note below. Common DSP code uses the
 # default fractional mode, which this models exactly.
-MAC0S: xreg3_l * xreg0_l is xh00=0 & xh10=0 & xreg3_l & xreg0_l { local prod:8 = (sext(xreg3_l) * sext(xreg0_l)) << 1; export prod; }
-MAC0S: xreg3_l * xreg0_h is xh00=0 & xh10=1 & xreg3_l & xreg0_h { local prod:8 = (sext(xreg3_l) * sext(xreg0_h)) << 1; export prod; }
-MAC0S: xreg3_h * xreg0_l is xh00=1 & xh10=0 & xreg3_h & xreg0_l { local prod:8 = (sext(xreg3_h) * sext(xreg0_l)) << 1; export prod; }
-MAC0S: xreg3_h * xreg0_h is xh00=1 & xh10=1 & xreg3_h & xreg0_h { local prod:8 = (sext(xreg3_h) * sext(xreg0_h)) << 1; export prod; }
+MAC0S: xreg3_l * xreg0_l is xh00=0 & xh10=0 & mmodval & xreg3_l & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_l); local pu:8 = zext(xreg3_l)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC0S: xreg3_l * xreg0_h is xh00=0 & xh10=1 & mmodval & xreg3_l & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_h); local pu:8 = zext(xreg3_l)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC0S: xreg3_h * xreg0_l is xh00=1 & xh10=0 & mmodval & xreg3_h & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_l); local pu:8 = zext(xreg3_h)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC0S: xreg3_h * xreg0_h is xh00=1 & xh10=1 & mmodval & xreg3_h & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_h); local pu:8 = zext(xreg3_h)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
 
-MAC0: A0 =  MAC0S is A0 & MAC0S & xop01112=0 { local r:8; sat_s40(r, MAC0S); accset(A0, r); }
-MAC0: A0 += MAC0S is A0 & MAC0S & xop01112=1 { local a:8; accext(a, A0); a = a + MAC0S; sat_s40(a, a); accset(A0, a); }
-MAC0: A0 -= MAC0S is A0 & MAC0S & xop01112=2 { local a:8; accext(a, A0); a = a - MAC0S; sat_s40(a, a); accset(A0, a); }
+MAC0: A0 =  MAC0S is A0 & MAC0S & mmodval & xop01112=0 { local mv:4=mmodval; local r:8; sat_macc(r, MAC0S, mv); accset(A0, r); }
+MAC0: A0 += MAC0S is A0 & MAC0S & mmodval & xop01112=1 { local a:8; accext(a, A0); a = a + MAC0S; local mv:4=mmodval; sat_macc(a, a, mv); accset(A0, a); }
+MAC0: A0 -= MAC0S is A0 & MAC0S & mmodval & xop01112=2 { local a:8; accext(a, A0); a = a - MAC0S; local mv:4=mmodval; sat_macc(a, a, mv); accset(A0, a); }
 
-MAC1S: xreg3_l * xreg0_l is xh01=0 & xh11=0 & xreg3_l & xreg0_l { local prod:8 = (sext(xreg3_l) * sext(xreg0_l)) << 1; export prod; }
-MAC1S: xreg3_l * xreg0_h is xh01=0 & xh11=1 & xreg3_l & xreg0_h { local prod:8 = (sext(xreg3_l) * sext(xreg0_h)) << 1; export prod; }
-MAC1S: xreg3_h * xreg0_l is xh01=1 & xh11=0 & xreg3_h & xreg0_l { local prod:8 = (sext(xreg3_h) * sext(xreg0_l)) << 1; export prod; }
-MAC1S: xreg3_h * xreg0_h is xh01=1 & xh11=1 & xreg3_h & xreg0_h { local prod:8 = (sext(xreg3_h) * sext(xreg0_h)) << 1; export prod; }
+MAC1S: xreg3_l * xreg0_l is xh01=0 & xh11=0 & mmodval & xreg3_l & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_l); local pu:8 = zext(xreg3_l)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC1S: xreg3_l * xreg0_h is xh01=0 & xh11=1 & mmodval & xreg3_l & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_h); local pu:8 = zext(xreg3_l)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC1S: xreg3_h * xreg0_l is xh01=1 & xh11=0 & mmodval & xreg3_h & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_l); local pu:8 = zext(xreg3_h)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MAC1S: xreg3_h * xreg0_h is xh01=1 & xh11=1 & mmodval & xreg3_h & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_h); local pu:8 = zext(xreg3_h)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
 
-MAC1: A1 =  MAC1S is A1 & op10001=0 ; MAC1S { local r:8; sat_s40(r, MAC1S); accset(A1, r); }
-MAC1: A1 += MAC1S is A1 & op10001=1 ; MAC1S { local a:8; accext(a, A1); a = a + MAC1S; sat_s40(a, a); accset(A1, a); }
-MAC1: A1 -= MAC1S is A1 & op10001=2 ; MAC1S { local a:8; accext(a, A1); a = a - MAC1S; sat_s40(a, a); accset(A1, a); }
+MAC1: A1 =  MAC1S is A1 & mmodval & op10001=0 ; MAC1S { local mv:4=mmodval; local r:8; sat_macc(r, MAC1S, mv); accset(A1, r); }
+MAC1: A1 += MAC1S is A1 & mmodval & op10001=1 ; MAC1S { local a:8; accext(a, A1); a = a + MAC1S; local mv:4=mmodval; sat_macc(a, a, mv); accset(A1, a); }
+MAC1: A1 -= MAC1S is A1 & mmodval & op10001=2 ; MAC1S { local a:8; accext(a, A1); a = a - MAC1S; local mv:4=mmodval; sat_macc(a, a, mv); accset(A1, a); }
 
 # Mode-modifier subtables: display-only tags. Saturation/round selection per mode
 # is applied at the move-to-Dreg site; the accumulate path above uses s40.
-MMOD0:         is mmod0508=0 { }
-MMOD0: "(w32)" is mmod0508=3 { }
-MMOD0: "(fu)"  is mmod0508=4 { }
-MMOD0: "(is)"  is mmod0508=8 { }
+MMOD0:         is mmod0508=0 [ mmodval=0; ] { }
+MMOD0: "(w32)" is mmod0508=3 [ mmodval=3; ] { }
+MMOD0: "(fu)"  is mmod0508=4 [ mmodval=4; ] { }
+MMOD0: "(is)"  is mmod0508=8 [ mmodval=8; ] { }
 
-MMOD1:           is mmod0508=0 { }
-MMOD1: "(s2rnd)" is mmod0508=1 { }
-MMOD1: "(t)"     is mmod0508=2 { }
-MMOD1: "(fu)"    is mmod0508=4 { }
-MMOD1: "(tfu)"   is mmod0508=6 { }
-MMOD1: "(is)"    is mmod0508=8 { }
-MMOD1: "(iss2)"  is mmod0508=9 { }
-MMOD1: "(ih)"    is mmod0508=11 { }
-MMOD1: "(iu)"    is mmod0508=12 { }
+MMOD1:           is mmod0508=0 [ mmodval=0; ] { }
+MMOD1: "(s2rnd)" is mmod0508=1 [ mmodval=1; ] { }
+MMOD1: "(t)"     is mmod0508=2 [ mmodval=2; ] { }
+MMOD1: "(fu)"    is mmod0508=4 [ mmodval=4; ] { }
+MMOD1: "(tfu)"   is mmod0508=6 [ mmodval=6; ] { }
+MMOD1: "(is)"    is mmod0508=8 [ mmodval=8; ] { }
+MMOD1: "(iss2)"  is mmod0508=9 [ mmodval=9; ] { }
+MMOD1: "(ih)"    is mmod0508=11 [ mmodval=11; ] { }
+MMOD1: "(iu)"    is mmod0508=12 [ mmodval=12; ] { }
 
-MMODE:           is mmod0508=0 { }
-MMODE: "(s2rnd)" is mmod0508=1 { }
-MMODE: "(fu)"    is mmod0508=4 { }
-MMODE: "(is)"    is mmod0508=8 { }
-MMODE: "(iss2)"  is mmod0508=9 { }
-MMODE: "(iu)"    is mmod0508=12 { }
+MMODE:           is mmod0508=0 [ mmodval=0; ] { }
+MMODE: "(s2rnd)" is mmod0508=1 [ mmodval=1; ] { }
+MMODE: "(fu)"    is mmod0508=4 [ mmodval=4; ] { }
+MMODE: "(is)"    is mmod0508=8 [ mmodval=8; ] { }
+MMODE: "(iss2)"  is mmod0508=9 [ mmodval=9; ] { }
+MMODE: "(iu)"    is mmod0508=12 [ mmodval=12; ] { }
 
 MML:       is mm04=0 { }
 MML: "(m)" is mm04=1 { }
 
-MMLMMOD0:           is mm04=0 & mmod0508=0 { }
-MMLMMOD0: "(w32)"   is mm04=0 & mmod0508=3 { }
-MMLMMOD0: "(fu)"    is mm04=0 & mmod0508=4 { }
-MMLMMOD0: "(is)"    is mm04=0 & mmod0508=8 { }
-MMLMMOD0: "(m)"     is mm04=1 & mmod0508=0 { }
-MMLMMOD0: "(m,w32)" is mm04=1 & mmod0508=3 { }
-MMLMMOD0: "(m,fu)"  is mm04=1 & mmod0508=4 { }
-MMLMMOD0: "(m,is)"  is mm04=1 & mmod0508=8 { }
+MMLMMOD0:           is mm04=0 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMOD0: "(w32)"   is mm04=0 & mmod0508=3 [ mmodval=3; ] { }
+MMLMMOD0: "(fu)"    is mm04=0 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMOD0: "(is)"    is mm04=0 & mmod0508=8 [ mmodval=8; ] { }
+MMLMMOD0: "(m)"     is mm04=1 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMOD0: "(m,w32)" is mm04=1 & mmod0508=3 [ mmodval=3; ] { }
+MMLMMOD0: "(m,fu)"  is mm04=1 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMOD0: "(m,is)"  is mm04=1 & mmod0508=8 [ mmodval=8; ] { }
 
-MMLMMOD1:           is mm04=0 & mmod0508=0 { }
-MMLMMOD1: "(s2rnd)" is mm04=0 & mmod0508=1 { }
-MMLMMOD1: "(t)"     is mm04=0 & mmod0508=2 { }
-MMLMMOD1: "(fu)"    is mm04=0 & mmod0508=4 { }
-MMLMMOD1: "(tfu)"   is mm04=0 & mmod0508=6 { }
-MMLMMOD1: "(is)"    is mm04=0 & mmod0508=8 { }
-MMLMMOD1: "(iss2)"  is mm04=0 & mmod0508=9 { }
-MMLMMOD1: "(ih)"    is mm04=0 & mmod0508=11 { }
-MMLMMOD1: "(iu)"    is mm04=0 & mmod0508=12 { }
-MMLMMOD1: "(m)"       is mm04=1 & mmod0508=0 { }
-MMLMMOD1: "(m,s2rnd)" is mm04=1 & mmod0508=1 { }
-MMLMMOD1: "(m,t)"     is mm04=1 & mmod0508=2 { }
-MMLMMOD1: "(m,fu)"    is mm04=1 & mmod0508=4 { }
-MMLMMOD1: "(m,tfu)"   is mm04=1 & mmod0508=6 { }
-MMLMMOD1: "(m,is)"    is mm04=1 & mmod0508=8 { }
-MMLMMOD1: "(m,iss2)"  is mm04=1 & mmod0508=9 { }
-MMLMMOD1: "(m,ih)"    is mm04=1 & mmod0508=11 { }
-MMLMMOD1: "(m,iu)"    is mm04=1 & mmod0508=12 { }
+MMLMMOD1:           is mm04=0 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMOD1: "(s2rnd)" is mm04=0 & mmod0508=1 [ mmodval=1; ] { }
+MMLMMOD1: "(t)"     is mm04=0 & mmod0508=2 [ mmodval=2; ] { }
+MMLMMOD1: "(fu)"    is mm04=0 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMOD1: "(tfu)"   is mm04=0 & mmod0508=6 [ mmodval=6; ] { }
+MMLMMOD1: "(is)"    is mm04=0 & mmod0508=8 [ mmodval=8; ] { }
+MMLMMOD1: "(iss2)"  is mm04=0 & mmod0508=9 [ mmodval=9; ] { }
+MMLMMOD1: "(ih)"    is mm04=0 & mmod0508=11 [ mmodval=11; ] { }
+MMLMMOD1: "(iu)"    is mm04=0 & mmod0508=12 [ mmodval=12; ] { }
+MMLMMOD1: "(m)"       is mm04=1 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMOD1: "(m,s2rnd)" is mm04=1 & mmod0508=1 [ mmodval=1; ] { }
+MMLMMOD1: "(m,t)"     is mm04=1 & mmod0508=2 [ mmodval=2; ] { }
+MMLMMOD1: "(m,fu)"    is mm04=1 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMOD1: "(m,tfu)"   is mm04=1 & mmod0508=6 [ mmodval=6; ] { }
+MMLMMOD1: "(m,is)"    is mm04=1 & mmod0508=8 [ mmodval=8; ] { }
+MMLMMOD1: "(m,iss2)"  is mm04=1 & mmod0508=9 [ mmodval=9; ] { }
+MMLMMOD1: "(m,ih)"    is mm04=1 & mmod0508=11 [ mmodval=11; ] { }
+MMLMMOD1: "(m,iu)"    is mm04=1 & mmod0508=12 [ mmodval=12; ] { }
 
-MMLMMODE:             is mm04=0 & mmod0508=0 { }
-MMLMMODE: "(s2rnd)"   is mm04=0 & mmod0508=1 { }
-MMLMMODE: "(fu)"      is mm04=0 & mmod0508=4 { }
-MMLMMODE: "(is)"      is mm04=0 & mmod0508=8 { }
-MMLMMODE: "(iss2)"    is mm04=0 & mmod0508=9 { }
-MMLMMODE: "(iu)"      is mm04=0 & mmod0508=12 { }
-MMLMMODE: "(m)"       is mm04=1 & mmod0508=0 { }
-MMLMMODE: "(m,s2rnd)" is mm04=1 & mmod0508=1 { }
-MMLMMODE: "(m,fu)"    is mm04=1 & mmod0508=4 { }
-MMLMMODE: "(m,is)"    is mm04=1 & mmod0508=8 { }
-MMLMMODE: "(m,iss2)"  is mm04=1 & mmod0508=9 { }
-MMLMMODE: "(m,iu)"    is mm04=1 & mmod0508=12 { }
+MMLMMODE:             is mm04=0 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMODE: "(s2rnd)"   is mm04=0 & mmod0508=1 [ mmodval=1; ] { }
+MMLMMODE: "(fu)"      is mm04=0 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMODE: "(is)"      is mm04=0 & mmod0508=8 [ mmodval=8; ] { }
+MMLMMODE: "(iss2)"    is mm04=0 & mmod0508=9 [ mmodval=9; ] { }
+MMLMMODE: "(iu)"      is mm04=0 & mmod0508=12 [ mmodval=12; ] { }
+MMLMMODE: "(m)"       is mm04=1 & mmod0508=0 [ mmodval=0; ] { }
+MMLMMODE: "(m,s2rnd)" is mm04=1 & mmod0508=1 [ mmodval=1; ] { }
+MMLMMODE: "(m,fu)"    is mm04=1 & mmod0508=4 [ mmodval=4; ] { }
+MMLMMODE: "(m,is)"    is mm04=1 & mmod0508=8 [ mmodval=8; ] { }
+MMLMMODE: "(m,iss2)"  is mm04=1 & mmod0508=9 [ mmodval=9; ] { }
+MMLMMODE: "(m,iu)"    is mm04=1 & mmod0508=12 [ mmodval=12; ] { }
 
 :MAC^p MAC0 MMOD0             is  p & op0910=0 & op10001=3 & w102=0 & p03=0 & MMOD0       ; xw0=0 & MAC0 { build MAC0; }
 :MAC^p MAC1 MMLMMOD0          is (p & op0910=0 &             w102=0 & p03=0 & MMLMMOD0    ; xw0=0 & xop01112=3) & MAC1 { build MAC1; }
@@ -1254,15 +1268,15 @@ MMLMMODE: "(m,iu)"    is mm04=1 & mmod0508=12 { }
 # |h01|h11|.w0|.op0...|h00|h10|.dest......|.src0......|.src1......|
 # +---+---+---+---|---+---+---+---|---+---+---+---|---+---+---+---+
 
-MUL0: xreg3_l * xreg0_l is xh00=0 & xh10=0 & xreg3_l & xreg0_l { local prod:8 = (sext(xreg3_l) * sext(xreg0_l)) << 1; export prod; }
-MUL0: xreg3_l * xreg0_h is xh00=0 & xh10=1 & xreg3_l & xreg0_h { local prod:8 = (sext(xreg3_l) * sext(xreg0_h)) << 1; export prod; }
-MUL0: xreg3_h * xreg0_l is xh00=1 & xh10=0 & xreg3_h & xreg0_l { local prod:8 = (sext(xreg3_h) * sext(xreg0_l)) << 1; export prod; }
-MUL0: xreg3_h * xreg0_h is xh00=1 & xh10=1 & xreg3_h & xreg0_h { local prod:8 = (sext(xreg3_h) * sext(xreg0_h)) << 1; export prod; }
+MUL0: xreg3_l * xreg0_l is xh00=0 & xh10=0 & mmodval & xreg3_l & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_l); local pu:8 = zext(xreg3_l)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL0: xreg3_l * xreg0_h is xh00=0 & xh10=1 & mmodval & xreg3_l & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_h); local pu:8 = zext(xreg3_l)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL0: xreg3_h * xreg0_l is xh00=1 & xh10=0 & mmodval & xreg3_h & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_l); local pu:8 = zext(xreg3_h)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL0: xreg3_h * xreg0_h is xh00=1 & xh10=1 & mmodval & xreg3_h & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_h); local pu:8 = zext(xreg3_h)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
 
-MUL1: xreg3_l * xreg0_l is xh01=0 & xh11=0 & xreg3_l & xreg0_l { local prod:8 = (sext(xreg3_l) * sext(xreg0_l)) << 1; export prod; }
-MUL1: xreg3_l * xreg0_h is xh01=0 & xh11=1 & xreg3_l & xreg0_h { local prod:8 = (sext(xreg3_l) * sext(xreg0_h)) << 1; export prod; }
-MUL1: xreg3_h * xreg0_l is xh01=1 & xh11=0 & xreg3_h & xreg0_l { local prod:8 = (sext(xreg3_h) * sext(xreg0_l)) << 1; export prod; }
-MUL1: xreg3_h * xreg0_h is xh01=1 & xh11=1 & xreg3_h & xreg0_h { local prod:8 = (sext(xreg3_h) * sext(xreg0_h)) << 1; export prod; }
+MUL1: xreg3_l * xreg0_l is xh01=0 & xh11=0 & mmodval & xreg3_l & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_l); local pu:8 = zext(xreg3_l)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL1: xreg3_l * xreg0_h is xh01=0 & xh11=1 & mmodval & xreg3_l & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_l)*sext(xreg0_h); local pu:8 = zext(xreg3_l)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL1: xreg3_h * xreg0_l is xh01=1 & xh11=0 & mmodval & xreg3_h & xreg0_l { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_l); local pu:8 = zext(xreg3_h)*zext(xreg0_l); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
+MUL1: xreg3_h * xreg0_h is xh01=1 & xh11=1 & mmodval & xreg3_h & xreg0_h { local mv:4 = mmodval; local uns:1 = (mv==4)||(mv==6)||(mv==12); local ps:8 = sext(xreg3_h)*sext(xreg0_h); local pu:8 = zext(xreg3_h)*zext(xreg0_h); local prod:8 = (ps * zext(uns==0)) + (pu * zext(uns)); local sc:1 = (mv==0)||(mv==1)||(mv==2)||(mv==3); prod = prod << sc; export prod; }
 
 :MULT^p xreg6_l = MUL0 MMOD1                     is p & op0910=1 & p03=0 & w102=0 & op10001=0 & mm04=0 & MMOD1 ; xw0=1 & xop01112=0 & MUL0 &        xreg6_l { local s:8; sat_s16(s, MUL0 s>> 16); xreg6_l = s:2; build p; }
 :MULT^p xreg6_h = MUL1 MMLMMOD1                  is p & op0910=1 & p03=0 & w102=1 & op10001=0 & MMLMMOD1       ; xw0=0 & xop01112=0 & MUL1 &                  xreg6_h { local s:8; sat_s16(s, MUL1 s>> 16); xreg6_h = s:2; build p; }
@@ -1271,6 +1285,55 @@ MUL1: xreg3_h * xreg0_h is xh01=1 & xh11=1 & xreg3_h & xreg0_h { local prod:8 = 
 :MULT^p xreg6_e = MUL0 MMODE                     is p & op0910=1 & p03=1 & w102=0 & op10001=0 & mm04=0 & MMODE ; xw0=1 & xop01112=0 & MUL0 &        xreg6_e { local s:8; sat_s32(s, MUL0); xreg6_e = s:4; build p; }
 :MULT^p xreg6_o = MUL1 MMLMMODE                  is p & op0910=1 & p03=1 & w102=1 & op10001=0 & MMLMMODE       ; xw0=0 & xop01112=0 & MUL1 &                  xreg6_o { local s:8; sat_s32(s, MUL1); xreg6_o = s:4; build p; }
 :MULT^p xreg6_o = MUL1 MML, xreg6_e = MUL0 MMODE is p & op0910=1 & p03=1 & w102=1 & op10001=0 & MML & MMODE    ; xw0=1 & xop01112=0 & MUL0 & MUL1 & xreg6_e & xreg6_o { local s:8; sat_s32(s, MUL1); xreg6_o = s:4; local t:8; sat_s32(t, MUL0); xreg6_e = t:4; build p; }
+
+
+#####
+# DSP complex multiply (CMUL) -- Blackfin+ (BF60x/BF70x) complex-arithmetic extension.
+#
+# Encoded in the dsp32mac group with the "complex mac" sub-encoding selected by mmod > 12
+# (mmod 13 = default fractional, 14 = (T), 15 = (IS)).  A Dreg holds a packed Q15 complex
+# value { im = high 16, re = low 16 }.  op1 (op10001) picks the conjugation:
+#   0 -> CMUL(s0, s1)    1 -> CMUL(s0, s1*)    2 -> CMUL(s0*, s1*)
+# Only the default-mode (mmod 13) plain "Dreg = CMUL(...)" form (op0 == 3, w0 == 1, single
+# dest) is modelled -- the form ADI's cfftf_fr16 / ifftf_fr16 FFT kernels use for the twiddle
+# multiply.  Per the BF70x Programming Reference, the real result -> dest.L and imaginary
+# result -> dest.H, each as the upper 16 bits of the complex product (signed fractional).
+# Modelled as (re/im) >> 15 with 16-bit saturation (the fractional x2 makes the upper-16
+# extract == >>15); conjugate negates the relevant imaginary terms.  The default-mode round
+# bias and the (T)/(IS) and accumulator (A1:0 ...) variants are not yet modelled.
+
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 ")"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=0 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
+    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
+    local rr:8; sat_s16(rr, (ar*br - ai*bi) s>> 15);
+    local ri:8; sat_s16(ri, (ar*bi + ai*br) s>> 15);
+    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
+    build p;
+}
+
+:CMUL^p xreg6 = "(" xreg3 "," xreg0 "*)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=1 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
+    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
+    local rr:8; sat_s16(rr, (ar*br + ai*bi) s>> 15);
+    local ri:8; sat_s16(ri, (ai*br - ar*bi) s>> 15);
+    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
+    build p;
+}
+
+:CMUL^p xreg6 = "(" xreg3 "*," xreg0 "*)"
+    is p & op0910=0 & p03=0 & w102=0 & mm04=0 & op10001=2 & mmod0508=13 ; xw0=1 & xop01112=3 & xreg6 & xreg3 & xreg0
+{
+    local ar:8 = sext(xreg3[0,16]);  local ai:8 = sext(xreg3[16,16]);
+    local br:8 = sext(xreg0[0,16]);  local bi:8 = sext(xreg0[16,16]);
+    local rr:8; sat_s16(rr, (ar*br - ai*bi) s>> 15);
+    local ri:8; sat_s16(ri, (0:8 - (ar*bi + ai*br)) s>> 15);
+    xreg6 = (zext(ri:2) << 16) | zext(rr:2);
+    build p;
+}
 
 
 #####
@@ -1727,7 +1790,23 @@ LC: LC1 is LC1 & c04=1 { export LC1; }
 
 LCm: LC              is rop0506=0 & LC ; li15=0 & lpreg=0 { }
 LCm: LC = lpreg      is rop0506=1 & LC ; li15=0 & lpreg   { LC = lpreg; }
+# BF+ (BF70x) rop=2 LSETUP variant: plain loop setup, no Preg counter-load (bit5=0, like rop=0).
+# Omitted by the deanm1278/blackfin-plus-gnu fork (dis+sim both reject rop=2), so this was a real
+# decoder gap. Observed in R7 BF702 DSP loops (FindMaxBin 0x11a02046, DspScanStateMachine 0x11a0422c..)
+# where the eoffs field correctly targets each loop bottom; reg=0 in all sites. Semantics mirror rop=0.
+LCm: LC              is rop0506=2 & LC ; li15=0 & lpreg=0 { }
 LCm: LC = lpreg >> 1 is rop0506=3 & LC ; li15=0 & lpreg   { LC = lpreg >> 1; }
+
+# BF+ li15=1 LSETUP forms (alternate loop-end-offset encoding mode). All four li15=0 rows above
+# require li15=0, so any LSETUP with bit15 of iw1 set was a hard decoder gap (halt_baddata in the
+# DECOMPILER even though disasm placed the op). Observed in R7 BF702 at 0x11a04aca (iw0=0xe0c7,
+# iw1=0xfc1e) and 0x11a04b24 (iw0=0xe0cf, iw1=0xfc06): rop=2, li15=1, lpreg=7, eoffs (0,9) targets a
+# large unrolled DSP loop (lend ~0x11a04f06). li15 does not change the counter source, so each row
+# mirrors its li15=0 rop semantics; lpreg left unconstrained for the no-load rops (it is non-zero here).
+LCm: LC              is rop0506=0 & LC ; li15=1 { }
+LCm: LC = lpreg      is rop0506=1 & LC ; li15=1 & lpreg { LC = lpreg; }
+LCm: LC              is rop0506=2 & LC ; li15=1 { }
+LCm: LC = lpreg >> 1 is rop0506=3 & LC ; li15=1 & lpreg { LC = lpreg >> 1; }
 
 :LSETUP (lstart, lend) LCm is (op9=0x1c1 & c04=0 & soffs ; eoffs) & LCm
 [
